@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "app/api/*/route.ts": {
+      "maxDuration": 300
+    },
+    "app/firesearch/search.tsx": {
+      "maxDuration": 300
+    }
+  }
+}
