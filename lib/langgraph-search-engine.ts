@@ -7,8 +7,8 @@ import { ContextProcessor } from './context-processor';
 // Configuration constants
 const SEARCH_CONFIG = {
   MAX_SEARCH_QUERIES: 12,
-  MAX_SOURCES_PER_SEARCH: 5,
-  MAX_SOURCES_TO_SCRAPE: 3,
+  MAX_SOURCES_PER_SEARCH: 8,
+  MAX_SOURCES_TO_SCRAPE: 6,
   MIN_CONTENT_LENGTH: 100,
   MAX_RETRIES: 2,
   SUMMARY_CHAR_LIMIT: 100,
@@ -750,8 +750,8 @@ Instructions:
 - Start with a clear, concise title (e.g., "Researching egg shortage" or "Understanding climate change impacts")
 - Then explain in 1-2 sentences what aspects of the topic the user wants to know about
 - If this relates to previous questions, acknowledge that connection
-- Finally, mention that you'll search for the latest information to help answer their question
-- When referring to time periods, be aware of the current date and year
+- Finally, mention that you'll search for information to help answer their question
+- Only mention searching for "latest" information if the query is explicitly about recent events or current trends
 
 Keep it natural and conversational, showing you truly understand their request.`),
       new HumanMessage(`Query: "${query}"${contextPrompt}`)
@@ -779,6 +779,8 @@ Keep it natural and conversational, showing you truly understand their request.`
 
 Analyze this query and generate appropriate search queries.
 
+CRITICAL: DO NOT add years, dates, or temporal qualifiers (like "2024", "2025", "latest", "current") to search queries UNLESS the user's query explicitly contains words like "latest", "current", "recent", "new", "2024", "2025", etc.
+
 Instructions:
 - For simple queries (e.g., "What is X?") → use just 1 search
 - For queries with multiple distinct questions → create a separate search for EACH question
@@ -786,14 +788,15 @@ Instructions:
 - Don't artificially group unrelated topics together
 - Each search should be focused and specific
 - If the query refers to previous context, include the specific items from context
-- Include time-sensitive qualifiers like "2024", "latest", or "current" when relevant
 
 Examples:
-- "What is firecrawl?" → 1 search: "firecrawl overview features documentation 2024"
+- "What is firecrawl?" → 1 search: "firecrawl overview features documentation"
+- "Who is John Doe?" → 1 search: "who is John Doe"
 - "What is X? How does Y work? Where to buy Z?" → 3 separate searches
 - "Tell me about A, B, C, D, and E" → 5 separate searches (one for each)
 - "Compare React vs Vue vs Angular" → 3 searches (one for each framework)
-- "What are the top 10 programming languages?" → 1 search: "top 10 programming languages 2024"
+- "What are the latest programming languages?" → 1 search: "latest programming languages 2024"
+- "Current AI trends" → 1 search: "current AI trends 2024"
 
 Important: If the user asks about multiple distinct things, create separate searches. Don't force them into fewer searches.
 
@@ -839,8 +842,7 @@ Instructions:
 - Return just ONE sentence summarizing the most important finding
 - Make it specific and factual (include numbers, dates, or specific details if relevant)
 - Keep it under ${SEARCH_CONFIG.SUMMARY_CHAR_LIMIT} characters
-- Don't include any prefixes like "The article states" or "According to"
-- Be aware of the current date when interpreting time-sensitive information`),
+- Don't include any prefixes like "The article states" or "According to"`),
         new HumanMessage(`Query: "${query}"\n\nContent: ${content.slice(0, 2000)}`)
       ];
       
@@ -875,9 +877,7 @@ Instructions:
     const messages = [
       new SystemMessage(`${this.getCurrentDateContext()}
 
-Answer the user's question based on the provided sources. Provide a clear, comprehensive answer with citations [1], [2], etc. Use markdown formatting for better readability. If this question relates to previous topics discussed, make connections where relevant.
-
-Important: Be aware of the current date and year when discussing time-sensitive topics. If sources contain outdated information, acknowledge this and provide context about when the information was current.`),
+Answer the user's question based on the provided sources. Provide a clear, comprehensive answer with citations [1], [2], etc. Use markdown formatting for better readability. If this question relates to previous topics discussed, make connections where relevant.`),
       new HumanMessage(`Question: "${query}"${contextPrompt}\n\nBased on these sources:\n${sourcesText}`)
     ];
     
@@ -933,14 +933,14 @@ Instructions:
 - Keep each question under 80 characters
 - Return only the questions, one per line, no numbering or bullets
 - Consider the entire conversation context when generating questions
-- Include time-relevant questions when appropriate (e.g., "What changed in 2024?")
+- Only include time-relevant questions if the original query was about current events or trends
 
 Examples of good follow-up questions:
 - "How does this compare to [alternative]?"
-- "What are the latest 2024 developments?"
 - "Can you explain [technical term] in more detail?"
 - "What are the practical applications of this?"
-- "How has this changed since last year?"`),
+- "What are the main benefits and drawbacks?"
+- "How is this typically implemented?"`),
         new HumanMessage(`Original query: "${originalQuery}"\n\nAnswer summary: ${answer.length > 1000 ? answer.slice(0, 1000) + '...' : answer}${contextPrompt}`)
       ];
       
