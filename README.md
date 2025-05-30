@@ -12,7 +12,7 @@ Comprehensive web research powered by [Firecrawl](https://www.firecrawl.dev/) an
 - **OpenAI GPT-4o**: Search planning and follow-up generation
 - **Next.js 15**: Modern React framework with App Router
 
-[![View on GitHub](https://img.shields.io/badge/GitHub-View%20Source-181717?style=for-the-badge&logo=github)](https://github.com/mendableai/firesearch)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fmendableai%2Ffiresearch&env=FIRECRAWL_API_KEY,OPENAI_API_KEY&envDescription=API%20keys%20required%20for%20Firesearch&envLink=https%3A%2F%2Fgithub.com%2Fmendableai%2Ffiresearch%23required-api-keys)
 
 ## Setup
 
