@@ -22,14 +22,15 @@ export class ContextProcessor {
   async processSources(
     query: string,
     sources: Source[],
-    searchQueries: string[]
+    searchQueries: string[],
+    onProgress?: (message: string, sourceUrl?: string) => void
   ): Promise<ProcessedSource[]> {
     // Determine summary length based on number of sources
     const summaryLength = this.calculateSummaryLength(sources.length);
     
     // Process sources with GPT-4o-mini summarization
     const processedSources = await Promise.all(
-      sources.map(source => this.summarizeSource(source, query, searchQueries, summaryLength))
+      sources.map(source => this.summarizeSource(source, query, searchQueries, summaryLength, onProgress))
     );
 
     // Filter out failed sources and sort by relevance
@@ -288,7 +289,8 @@ export class ContextProcessor {
     source: Source,
     query: string,
     searchQueries: string[],
-    targetLength: number
+    targetLength: number,
+    _onProgress?: (message: string, sourceUrl?: string) => void // eslint-disable-line @typescript-eslint/no-unused-vars
   ): Promise<ProcessedSource> {
     // If no content, return empty source
     if (!source.content || source.content.length < 100) {
@@ -302,6 +304,8 @@ export class ContextProcessor {
     }
 
     try {
+      // No longer emit individual progress events
+      
       // Create a focused prompt for relevance-based summarization
       
       const result = await generateText({

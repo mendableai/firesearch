@@ -6,7 +6,10 @@
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "benchmark": "tsx eval/benchmark-runner.ts",
+    "benchmark:quick": "tsx eval/benchmark-runner.ts factual_queries",
+    "test:firecrawl": "tsx eval/test-firecrawl-simple.ts"
   },
   "dependencies": {
     "@ai-sdk/google": "^1.2.18",

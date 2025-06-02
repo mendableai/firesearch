@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { search } from './search';
 import { readStreamableValue } from 'ai/rsc';
 import { SearchDisplay } from './search-display';
@@ -23,7 +23,8 @@ import { toast } from "sonner";
 const SUGGESTED_QUERIES = [
   "Who are the founders of Firecrawl?",
   "When did NVIDIA release the RTX 4080 Super?",
-  "Compare the latest iPhone, Samsung Galaxy, and Google Pixel flagship features and prices"
+  "Compare the latest iPhone 16 and Samsung Galaxy S25",
+  "Compare Claude 4 to OpenAI's o3"
 ];
 
 // Helper component for sources list
@@ -98,7 +99,7 @@ function SourcesList({ sources }: { sources: Source[] }) {
       {/* Sources Panel */}
       <div className={`fixed inset-y-0 right-0 w-96 bg-white dark:bg-gray-900 border-l border-gray-200 dark:border-gray-700 transform transition-transform duration-300 ease-in-out ${
         showSourcesPanel ? 'translate-x-0' : 'translate-x-full'
-      } z-40 overflow-y-auto`}>
+      } z-40 overflow-y-auto scrollbar-hide`}>
         <div className="p-6">
           <div className="flex items-center justify-between mb-6">
             <h3 className="text-lg font-semibold">Sources ({sources.length})</h3>
@@ -165,7 +166,7 @@ function SourcesList({ sources }: { sources: Source[] }) {
                         {source.content.length.toLocaleString()} characters
                       </span>
                     </div>
-                    <div className="p-4 max-h-96 overflow-y-auto">
+                    <div className="p-4 max-h-96 overflow-y-auto scrollbar-hide">
                       <div className="prose prose-sm dark:prose-invert max-w-none">
                         <MarkdownRenderer content={source.content} />
                       </div>
@@ -198,6 +199,7 @@ export function Chat() {
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
   const [, setIsCheckingEnv] = useState<boolean>(true);
   const [pendingQuery, setPendingQuery] = useState<string>('');
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
 
   const handleSelectSuggestion = (suggestion: string) => {
     setInput(suggestion);
@@ -227,6 +229,13 @@ export function Chat() {
 
     checkEnvironment();
   }, []);
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    if (messagesContainerRef.current) {
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }
+  }, [messages]);
 
   const saveApiKey = () => {
     if (firecrawlApiKey.trim()) {
@@ -541,7 +550,7 @@ export function Chat() {
       ) : (
         <>
           {/* Messages */}
-          <div className="flex-1 overflow-auto px-4 sm:px-6 lg:px-8 py-6">
+          <div className="flex-1 overflow-auto scrollbar-hide px-4 sm:px-6 lg:px-8 py-6">
             <div className="max-w-4xl mx-auto space-y-6">
               {messages.map(msg => (
                 <div

@@ -25,39 +25,54 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     // Italic text  
     parsed = parsed.replace(/\*(.+?)\*/g, '<em>$1</em>');
     
-    // Headers
+    // Headers (process in order from most specific to least)
+    parsed = parsed.replace(/^#### (.+)$/gm, '<h4 class="text-sm font-semibold mt-3 mb-2">$1</h4>');
     parsed = parsed.replace(/^### (.+)$/gm, '<h3 class="text-base font-semibold mt-4 mb-2">$1</h3>');
     parsed = parsed.replace(/^## (.+)$/gm, '<h2 class="text-lg font-semibold mt-5 mb-2">$1</h2>');
     parsed = parsed.replace(/^# (.+)$/gm, '<h1 class="text-xl font-bold mt-6 mb-3">$1</h1>');
     
-    // Handle list blocks
+    // Handle list blocks with better multi-line support
     const listBlocks = parsed.split('\n');
     let inList = false;
+    let listType = 'ul';
     const processedLines = [];
     
     for (let i = 0; i < listBlocks.length; i++) {
       const line = listBlocks[i];
-      const isListItem = line.match(/^- (.+)$/) || line.match(/^(\d+)\. (.+)$/);
+      const bulletMatch = line.match(/^- (.+)$/);
+      const numberMatch = line.match(/^(\d+)\. (.+)$/);
+      const isListItem = bulletMatch || numberMatch;
+      const isContinuation = inList && line.match(/^\s+/) && line.trim();
       
       if (isListItem && !inList) {
-        processedLines.push('<ul class="space-y-1 my-3">');
+        listType = bulletMatch ? 'ul' : 'ol';
+        processedLines.push(`<${listType} class="space-y-2 my-3 pl-0">`);
         inList = true;
-      } else if (!isListItem && inList) {
-        processedLines.push('</ul>');
+      } else if (!isListItem && !isContinuation && inList && line.trim() === '') {
+        // Empty line ends the list
+        processedLines.push(`</${listType}>`);
         inList = false;
       }
       
-      if (line.match(/^- (.+)$/)) {
-        processedLines.push(line.replace(/^- (.+)$/, '<li class="ml-5 list-disc">$1</li>'));
-      } else if (line.match(/^(\d+)\. (.+)$/)) {
-        processedLines.push(line.replace(/^(\d+)\. (.+)$/, '<li class="ml-5 list-decimal">$2</li>'));
+      if (bulletMatch) {
+        processedLines.push(`<li class="ml-5 list-disc">${bulletMatch[1]}</li>`);
+      } else if (numberMatch) {
+        processedLines.push(`<li class="ml-5 list-decimal">${numberMatch[2]}</li>`);
+      } else if (isContinuation && inList) {
+        // Append continuation to previous list item
+        if (processedLines.length > 0 && processedLines[processedLines.length - 1].includes('<li')) {
+          const lastLine = processedLines.pop();
+          if (lastLine) {
+            processedLines.push(lastLine.replace('</li>', ' ' + line.trim() + '</li>'));
+          }
+        }
       } else {
         processedLines.push(line);
       }
     }
     
     if (inList) {
-      processedLines.push('</ul>');
+      processedLines.push(`</${listType}>`);
     }
     
     parsed = processedLines.join('\n');
@@ -87,7 +102,7 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
     <div className="text-gray-700 dark:text-gray-300">
       <div 
         dangerouslySetInnerHTML={{ __html: parseMarkdown(content) }} 
-        className="markdown-content leading-relaxed [&>p]:text-sm [&>ul]:text-sm [&>ol]:text-sm [&_li]:text-sm [&>h1]:text-gray-900 [&>h1]:dark:text-gray-100 [&>h2]:text-gray-900 [&>h2]:dark:text-gray-100 [&>h3]:text-gray-900 [&>h3]:dark:text-gray-100"
+        className="markdown-content leading-relaxed [&>p]:text-sm [&>ul]:text-sm [&>ol]:text-sm [&_li]:text-sm [&>h1]:text-gray-900 [&>h1]:dark:text-gray-100 [&>h2]:text-gray-900 [&>h2]:dark:text-gray-100 [&>h3]:text-gray-900 [&>h3]:dark:text-gray-100 [&>h4]:text-gray-900 [&>h4]:dark:text-gray-100"
       />
       {streaming && <span className="animate-pulse text-orange-500">▊</span>}
     </div>

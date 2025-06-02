@@ -40,109 +40,194 @@ Comprehensive web research powered by [Firecrawl](https://www.firecrawl.dev/) an
 
 ```mermaid
 flowchart TB
-    %% User Query
-    Query["🔍 User Query<br/><i>e.g., Compare iPhone 16, Samsung S25, and Google Pixel 9</i>"]:::query
+    Query["'Compare Samsung Galaxy S25<br/>and iPhone 16'"]:::query
     
-    %% Break Query Phase
-    Break["🧩 Break Query into Multiple Searches<br/><i>LangGraph Orchestration</i>"]:::primary
-    
-    %% Individual Searches
-    Search1["📱 iPhone 16 specs pricing"]:::search
-    Search2["📱 Samsung Galaxy S25 review"]:::search
-    Search3["📱 Google Pixel 9 Pro features"]:::search
-    
-    %% Web Sources
-    subgraph Sources1[" "]
-        S1A["TechRadar<br/>iPhone 16 Review"]:::source
-        S1B["Apple.com<br/>Official Specs"]:::source
-        S1C["The Verge<br/>In-depth Analysis"]:::source
-    end
-    
-    subgraph Sources2[" "]
-        S2A["GSMArena<br/>S25 Ultra Specs"]:::source
-        S2B["Samsung.com<br/>Features Page"]:::source
-        S2C["Tom's Guide<br/>S25 Review"]:::source
-    end
-    
-    subgraph Sources3[" "]
-        S3A["DXOMark<br/>Camera Tests"]:::source
-        S3B["Google Store<br/>Pixel 9 Pro"]:::source
-        S3C["Android Authority<br/>Camera Review"]:::source
-    end
-    
-    %% Extract Markdown Phase
-    Extract1["📄 Extract Markdown<br/><i>Firecrawl API</i>"]:::extract
-    Extract2["📄 Extract Markdown<br/><i>Firecrawl API</i>"]:::extract
-    Extract3["📄 Extract Markdown<br/><i>Firecrawl API</i>"]:::extract
-    
-    %% Summarize Phase
-    Sum1["📝 Summarize"]:::summarize
-    Sum2["📝 Summarize"]:::summarize
-    Sum3["📝 Summarize"]:::summarize
-    
-    %% Synthesis Engine
-    Synthesis["🧠 Synthesis Engine<br/><i>GPT-4o with Context Processing</i>"]:::synthesis
-    
-    %% Final Answer
-    Answer["📊 Comprehensive Phone Comparison<br/>with citations from all 9 sources"]:::answer
-    
-    %% Connections
     Query --> Break
-    Break --> Search1
-    Break --> Search2
-    Break --> Search3
     
-    Search1 --> Sources1
-    Search2 --> Sources2
-    Search3 --> Sources3
+    Break["🔍 Break into Sub-Questions"]:::primary
     
-    Sources1 --> Extract1
-    Sources2 --> Extract2
-    Sources3 --> Extract3
+    subgraph SubQ["🌐 Search Queries"]
+        S1["iPhone 16 Pro specs features"]:::search
+        S2["Samsung Galaxy S25 Ultra specs"]:::search
+        S3["iPhone 16 vs Galaxy S25 comparison"]:::search
+    end
     
-    Extract1 --> Sum1
-    Extract2 --> Sum2
-    Extract3 --> Sum3
+    Break --> SubQ
     
-    Sum1 --> Synthesis
-    Sum2 --> Synthesis
-    Sum3 --> Synthesis
+    subgraph FC["🔥 Firecrawl API Calls"]
+        FC1["Firecrawl /search API<br/>Query 1"]:::firecrawl
+        FC2["Firecrawl /search API<br/>Query 2"]:::firecrawl
+        FC3["Firecrawl /search API<br/>Query 3"]:::firecrawl
+    end
     
-    Synthesis --> Answer
+    S1 --> FC1
+    S2 --> FC2
+    S3 --> FC3
     
-    %% Summary Box
-    Summary["Total: 3 searches → 9 web pages scraped → 9 markdowns → 9 summaries"]:::summary
+    subgraph Sources["📄 Sources Found"]
+        R1["Apple.com ✓<br/>The Verge ✓<br/>CNET ✓"]:::source
+        R2["GSMArena ✓<br/>TechRadar ✓<br/>Samsung.com ✓"]:::source
+        R3["AndroidAuth ✓<br/>TomsGuide ✓"]:::source
+    end
     
-    %% Styling
+    FC1 --> R1
+    FC2 --> R2
+    FC3 --> R3
+    
+    subgraph Valid["✅ Answer Validation"]
+        V1["iPhone 16 specs ✓ (0.95)"]:::good
+        V2["S25 specs ✓ (0.9)"]:::good
+        V3["S25 price ❌ (0.3)"]:::bad
+    end
+    
+    Sources --> Valid
+    
+    Valid --> Retry
+    
+    Retry{"Need info:<br/>S25 pricing?"}:::check
+    
+    subgraph Strat["🧠 Alternative Strategy"]
+        Original["Original: 'Galaxy S25 price'<br/>❌ No specific pricing found"]:::bad
+        NewTerms["Try: 'Galaxy S25 MSRP cost'<br/>'Samsung S25 pricing leak'<br/>'S25 vs S24 price comparison'"]:::strategy
+    end
+    
+    Retry -->|Yes| Strat
+    
+    subgraph Retry2["🔄 Retry Searches"]
+        Alt1["Galaxy S25 MSRP retail"]:::search
+        Alt2["Samsung S25 pricing leak"]:::search
+        Alt3["S25 vs S24 price comparison"]:::search
+    end
+    
+    Strat --> Retry2
+    
+    subgraph FC2G["🔥 Retry API Calls"]
+        FC4["Firecrawl /search API<br/>Alt Query 1"]:::firecrawl
+        FC5["Firecrawl /search API<br/>Alt Query 2"]:::firecrawl
+        FC6["Firecrawl /search API<br/>Alt Query 3"]:::firecrawl
+    end
+    
+    Alt1 --> FC4
+    Alt2 --> FC5
+    Alt3 --> FC6
+    
+    Results2["SamMobile ✓ ($899 leak)<br/>9to5Google ✓ ($100 more)<br/>PhoneArena ✓ ($899)"]:::source
+    
+    FC4 --> Results2
+    FC5 --> Results2
+    FC6 --> Results2
+    
+    Final["All answers found ✓<br/>S25 price: $899"]:::good
+    
+    Results2 --> Final
+    
+    Synthesis["LLM synthesizes response"]:::synthesis
+    
+    Final --> Synthesis
+    
+    FollowUp["Generate follow-up questions"]:::primary
+    
+    Synthesis --> FollowUp
+    
+    Citations["List citations [1-10]"]:::primary
+    
+    FollowUp --> Citations
+    
+    Answer["Complete response delivered"]:::answer
+    
+    Citations --> Answer
+    
+    %% No path - skip retry and go straight to synthesis
+    Retry -->|No| Synthesis
+    
     classDef query fill:#ff8c42,stroke:#ff6b1a,stroke-width:3px,color:#fff
-    classDef primary fill:#3a4a5c,stroke:#2c3a47,stroke-width:3px,color:#fff
+    classDef subq fill:#ffd4b3,stroke:#ff6b1a,stroke-width:1px,color:#333
     classDef search fill:#ff8c42,stroke:#ff6b1a,stroke-width:2px,color:#fff
     classDef source fill:#3a4a5c,stroke:#2c3a47,stroke-width:2px,color:#fff
-    classDef extract fill:#ff8c42,stroke:#ff6b1a,stroke-width:2px,color:#fff
-    classDef summarize fill:#3a4a5c,stroke:#2c3a47,stroke-width:2px,color:#fff
+    classDef check fill:#ffeb3b,stroke:#fbc02d,stroke-width:2px,color:#333
+    classDef good fill:#4caf50,stroke:#388e3c,stroke-width:2px,color:#fff
+    classDef bad fill:#f44336,stroke:#d32f2f,stroke-width:2px,color:#fff
+    classDef strategy fill:#9c27b0,stroke:#7b1fa2,stroke-width:2px,color:#fff
     classDef synthesis fill:#ff8c42,stroke:#ff6b1a,stroke-width:3px,color:#fff
     classDef answer fill:#3a4a5c,stroke:#2c3a47,stroke-width:3px,color:#fff
-    classDef summary fill:#f0f0f0,stroke:#ccc,stroke-width:1px,color:#333
+    classDef firecrawl fill:#ff6b1a,stroke:#ff4500,stroke-width:3px,color:#fff
+    classDef label fill:none,stroke:none,color:#666,font-weight:bold
 ```
 
-### Detailed Process Flow
+### Process Flow
 
-1. **Understanding**: Analyzes your query to identify key research needs
-2. **Planning**: Generates multiple search queries for comprehensive coverage
-3. **Searching**: Finds relevant sources across the web using Firecrawl's search API
-4. **Scraping**: Extracts full content from the most relevant sources
-5. **Analyzing**: Processes and scores content based on relevance to your query
-6. **Synthesizing**: Combines findings into a well-cited, comprehensive answer using GPT-4o
+1. **Break Down** - Complex queries split into focused sub-questions
+2. **Search** - Multiple searches via Firecrawl API for comprehensive coverage
+3. **Extract** - Markdown content extracted from web sources
+4. **Validate** - Check if sources actually answer the questions (0.7+ confidence)
+5. **Retry** - Alternative search terms for unanswered questions (max 2 attempts)
+6. **Synthesize** - GPT-4o combines findings into cited answer
 
 ### Key Features
 
-- **Multi-Query Decomposition**: Complex queries are intelligently broken down into multiple focused searches
-- **Real-time Progress Updates**: See exactly what the system is searching for and finding
-- **Smart Content Extraction**: Uses Firecrawl to bypass paywalls and extract clean markdown content
-- **Relevance Scoring**: Content is scored and summarized based on query relevance
-- **Streaming Responses**: Answers are streamed in real-time as they're generated
-- **Citation Tracking**: Every piece of information is properly cited with source links
-- **Conversation Memory**: Follow-up questions maintain context from previous queries
+- **Smart Search** - Breaks complex queries into multiple focused searches
+- **Answer Validation** - Verifies sources contain actual answers (0.7+ confidence)
+- **Auto-Retry** - Alternative search terms for unanswered questions
+- **Real-time Progress** - Live updates as searches complete
+- **Full Citations** - Every fact linked to its source
+- **Context Memory** - Follow-up questions maintain conversation context
+
+### Configuration
+
+Customize search behavior by modifying [`lib/config.ts`](lib/config.ts):
+
+```typescript
+export const SEARCH_CONFIG = {
+  // Search Settings
+  MAX_SEARCH_QUERIES: 12,        // Maximum number of search queries to generate
+  MAX_SOURCES_PER_SEARCH: 4,     // Maximum sources to return per search query
+  MAX_SOURCES_TO_SCRAPE: 3,      // Maximum sources to scrape for additional content
+  
+  // Content Processing
+  MIN_CONTENT_LENGTH: 100,       // Minimum content length to consider valid
+  SUMMARY_CHAR_LIMIT: 100,       // Character limit for source summaries
+  
+  // Retry Logic
+  MAX_RETRIES: 2,                // Maximum retry attempts for failed operations
+  MAX_SEARCH_ATTEMPTS: 2,        // Maximum attempts to find answers via search
+  MIN_ANSWER_CONFIDENCE: 0.7,    // Minimum confidence (0-1) that a question was answered
+  
+  // Timeouts
+  SCRAPE_TIMEOUT: 15000,         // Timeout for scraping operations (ms)
+} as const;
+```
+
+### Firecrawl API Integration
+
+Firesearch leverages Firecrawl's powerful `/search` endpoint:
+
+#### `/search` - Web Search with Content
+- **Purpose**: Finds relevant URLs AND extracts markdown content in one call
+- **Usage**: Each decomposed query is sent to find 6-8 relevant sources with content
+- **Response**: Returns URLs with titles, snippets, AND full markdown content
+- **Key Feature**: The `scrapeOptions` parameter enables content extraction during search
+- **Example**:
+  ```
+  POST /search
+  {
+    "query": "iPhone 16 specs pricing",
+    "limit": 8,
+    "scrapeOptions": {
+      "formats": ["markdown"]
+    }
+  }
+  ```
+
+### Search Strategies
+
+When initial results are insufficient, the system automatically tries:
+- **Broaden Keywords**: Removes specific terms for wider results
+- **Narrow Focus**: Adds specific terms to target missing aspects
+- **Synonyms**: Uses alternative terms and phrases
+- **Rephrase**: Completely reformulates the query
+- **Decompose**: Breaks complex queries into sub-questions
+- **Academic**: Adds scholarly terms for research-oriented results
+- **Practical**: Focuses on tutorials and how-to guides
 
 ## Example Queries
 

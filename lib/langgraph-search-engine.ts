@@ -3,18 +3,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { FirecrawlClient } from './firecrawl';
 import { ContextProcessor } from './context-processor';
-
-// Configuration constants
-const SEARCH_CONFIG = {
-  MAX_SEARCH_QUERIES: 12,
-  MAX_SOURCES_PER_SEARCH: 8,
-  MAX_SOURCES_TO_SCRAPE: 6,
-  MIN_CONTENT_LENGTH: 100,
-  MAX_RETRIES: 2,
-  SUMMARY_CHAR_LIMIT: 100,
-  CONTEXT_PREVIEW_LENGTH: 500,
-  SCRAPE_TIMEOUT: 15000
-} as const;
+import { SEARCH_CONFIG, MODEL_CONFIG } from './config';
 
 // Event types remain the same for frontend compatibility
 export type SearchPhase = 
@@ -34,7 +23,9 @@ export type SearchEvent =
   | { type: 'scraping'; url: string; index: number; total: number; query: string }
   | { type: 'content-chunk'; chunk: string }
   | { type: 'final-result'; content: string; sources: Source[]; followUpQuestions?: string[] }
-  | { type: 'error'; error: string; errorType?: ErrorType };
+  | { type: 'error'; error: string; errorType?: ErrorType }
+  | { type: 'source-processing'; url: string; title: string; stage: 'browsing' | 'extracting' | 'analyzing' }
+  | { type: 'source-complete'; url: string; summary: string };
 
 export type ErrorType = 'search' | 'scrape' | 'llm' | 'unknown';
 
@@ -43,6 +34,7 @@ export interface Source {
   title: string;
   content?: string;
   quality?: number;
+  summary?: string;
 }
 
 export interface SearchResult {
@@ -89,7 +81,12 @@ const SearchStateAnnotation = Annotation.Root({
   sources: Annotation<Source[]>({
     reducer: (existing: Source[], update: Source[] | undefined) => {
       if (!update) return existing;
-      return [...existing, ...update];
+      // Deduplicate sources by URL
+      const sourceMap = new Map<string, Source>();
+      [...existing, ...update].forEach(source => {
+        sourceMap.set(source.url, source);
+      });
+      return Array.from(sourceMap.values());
     },
     default: () => []
   }),
@@ -111,6 +108,23 @@ const SearchStateAnnotation = Annotation.Root({
   followUpQuestions: Annotation<string[] | undefined>({
     reducer: (x, y) => y ?? x,
     default: () => undefined
+  }),
+  
+  // Answer tracking
+  subQueries: Annotation<Array<{
+    question: string;
+    searchQuery: string;
+    answered: boolean;
+    answer?: string;
+    confidence: number;
+    sources: string[];
+  }> | undefined>({
+    reducer: (x, y) => y ?? x,
+    default: () => undefined
+  }),
+  searchAttempt: Annotation<number>({
+    reducer: (x, y) => y ?? x,
+    default: () => 0
   }),
   
   // Control fields
@@ -165,14 +179,14 @@ export class LangGraphSearchEngine {
     
     // Initialize LangChain models
     this.llm = new ChatOpenAI({
-      modelName: "gpt-4o-mini",
-      temperature: 0,
+      modelName: MODEL_CONFIG.FAST_MODEL,
+      temperature: MODEL_CONFIG.TEMPERATURE,
       openAIApiKey: apiKey,
     });
     
     this.streamingLlm = new ChatOpenAI({
-      modelName: "gpt-4o",
-      temperature: 0,
+      modelName: MODEL_CONFIG.QUALITY_MODEL,
+      temperature: MODEL_CONFIG.TEMPERATURE,
       streaming: true,
       openAIApiKey: apiKey,
     });
@@ -199,7 +213,6 @@ export class LangGraphSearchEngine {
   private buildGraph() {
     // Create closures for helper methods
     const analyzeQuery = this.analyzeQuery.bind(this);
-    const generateSearchQueries = this.generateSearchQueries.bind(this);
     const scoreContent = this.scoreContent.bind(this);
     const summarizeContent = this.summarizeContent.bind(this);
     const generateStreamingAnswer = this.generateStreamingAnswer.bind(this);
@@ -256,19 +269,71 @@ export class LangGraphSearchEngine {
         }
         
         try {
-          const searchQueries = await generateSearchQueries(state.query, state.context);
+          // Extract sub-queries if not already done
+          let subQueries = state.subQueries;
+          if (!subQueries) {
+            const extractSubQueries = this.extractSubQueries.bind(this);
+            const extracted = await extractSubQueries(state.query);
+            subQueries = extracted.map(sq => ({
+              question: sq.question,
+              searchQuery: sq.searchQuery,
+              answered: false,
+              confidence: 0,
+              sources: []
+            }));
+          }
+          
+          // Generate search queries for unanswered questions
+          const unansweredQueries = subQueries.filter(sq => !sq.answered || sq.confidence < SEARCH_CONFIG.MIN_ANSWER_CONFIDENCE);
+          
+          if (unansweredQueries.length === 0) {
+            // All questions answered, skip to analysis
+            return {
+              subQueries,
+              phase: 'analyzing' as SearchPhase
+            };
+          }
+          
+          // Use alternative search queries if this is a retry
+          let searchQueries: string[];
+          if (state.searchAttempt > 0) {
+            const generateAlternativeSearchQueries = this.generateAlternativeSearchQueries.bind(this);
+            searchQueries = await generateAlternativeSearchQueries(subQueries, state.searchAttempt);
+            
+            // Update sub-queries with new search queries
+            let alternativeIndex = 0;
+            subQueries.forEach(sq => {
+              if (!sq.answered || sq.confidence < SEARCH_CONFIG.MIN_ANSWER_CONFIDENCE) {
+                if (alternativeIndex < searchQueries.length) {
+                  sq.searchQuery = searchQueries[alternativeIndex];
+                  alternativeIndex++;
+                }
+              }
+            });
+          } else {
+            // First attempt - use the search queries from sub-queries
+            searchQueries = unansweredQueries.map(sq => sq.searchQuery);
+          }
           
           if (eventCallback) {
-            eventCallback({
-              type: 'thinking',
-              message: searchQueries.length > 3 
-                ? `I detected ${searchQueries.length} different questions/topics. I'll search for each one separately.`
-                : `I'll search for ${searchQueries.length} different aspects of your question`
-            });
+            if (state.searchAttempt === 0) {
+              eventCallback({
+                type: 'thinking',
+                message: searchQueries.length > 3 
+                  ? `I detected ${subQueries.length} different questions. I'll search for each one separately.`
+                  : `I'll search for information to answer your question.`
+              });
+            } else {
+              eventCallback({
+                type: 'thinking',
+                message: `Trying alternative search strategies for: ${unansweredQueries.map(sq => sq.question).join(', ')}`
+              });
+            }
           }
           
           return {
             searchQueries,
+            subQueries,
             currentSearchIndex: 0,
             phase: 'searching' as SearchPhase
           };
@@ -335,6 +400,77 @@ export class LangGraphSearchEngine {
             });
           }
           
+          // Process sources in parallel for better performance
+          if (SEARCH_CONFIG.PARALLEL_SUMMARY_GENERATION) {
+            await Promise.all(newSources.map(async (source) => {
+              if (eventCallback) {
+                eventCallback({
+                  type: 'source-processing',
+                  url: source.url,
+                  title: source.title,
+                  stage: 'browsing'
+                });
+              }
+              
+              // Score the content
+              source.quality = scoreContent(source.content || '', state.query);
+              
+              // Generate summary if content is available
+              if (source.content && source.content.length > SEARCH_CONFIG.MIN_CONTENT_LENGTH) {
+                const summary = await summarizeContent(source.content, searchQuery);
+                
+                // Store the summary in the source object
+                if (summary && !summary.toLowerCase().includes('no specific')) {
+                  source.summary = summary;
+                  
+                  if (eventCallback) {
+                    eventCallback({
+                      type: 'source-complete',
+                      url: source.url,
+                      summary: summary
+                    });
+                  }
+                }
+              }
+            }));
+          } else {
+            // Original sequential processing
+            for (const source of newSources) {
+              if (eventCallback) {
+                eventCallback({
+                  type: 'source-processing',
+                  url: source.url,
+                  title: source.title,
+                  stage: 'browsing'
+                });
+              }
+              
+              // Small delay for animation
+              await new Promise(resolve => setTimeout(resolve, SEARCH_CONFIG.SOURCE_ANIMATION_DELAY));
+              
+              // Score the content
+              source.quality = scoreContent(source.content || '', state.query);
+              
+              // Generate summary if content is available
+              if (source.content && source.content.length > SEARCH_CONFIG.MIN_CONTENT_LENGTH) {
+                const summary = await summarizeContent(source.content, searchQuery);
+                
+                // Store the summary in the source object
+                if (summary && !summary.toLowerCase().includes('no specific')) {
+                  source.summary = summary;
+                  
+                  if (eventCallback) {
+                    eventCallback({
+                      type: 'source-complete',
+                      url: source.url,
+                      summary: summary
+                    });
+                  }
+                }
+              }
+            }
+          }
+          
           return {
             sources: newSources,
             currentSearchIndex: currentIndex + 1
@@ -355,33 +491,11 @@ export class LangGraphSearchEngine {
         ) || [];
         const newScrapedSources: Source[] = [];
         
-        // Process sources that already have content
+        // Sources with content were already processed in search node, just pass them through
         const sourcesWithContent = state.sources?.filter(s => 
           s.content && s.content.length >= SEARCH_CONFIG.MIN_CONTENT_LENGTH
         ) || [];
-        
-        for (const source of sourcesWithContent) {
-          source.quality = scoreContent(source.content || '', state.query);
-          newScrapedSources.push(source);
-          
-          if (eventCallback) {
-            eventCallback({
-              type: 'scraping',
-              url: source.url,
-              index: newScrapedSources.length,
-              total: sourcesWithContent.length + Math.min(sourcesToScrape.length, SEARCH_CONFIG.MAX_SOURCES_TO_SCRAPE),
-              query: state.query
-            });
-          }
-          
-          const summary = await summarizeContent(source.content || '', state.query);
-          if (summary && eventCallback) {
-            eventCallback({
-              type: 'thinking',
-              message: summary
-            });
-          }
-        }
+        newScrapedSources.push(...sourcesWithContent);
         
         // Then scrape sources without content
         for (let i = 0; i < Math.min(sourcesToScrape.length, SEARCH_CONFIG.MAX_SOURCES_TO_SCRAPE); i++) {
@@ -407,12 +521,29 @@ export class LangGraphSearchEngine {
               };
               newScrapedSources.push(enrichedSource);
               
-              const summary = await summarizeContent(scraped.markdown, state.query);
-              if (summary && eventCallback) {
+              // Show processing animation
+              if (eventCallback) {
                 eventCallback({
-                  type: 'thinking',
-                  message: summary
+                  type: 'source-processing',
+                  url: source.url,
+                  title: source.title,
+                  stage: 'browsing'
                 });
+              }
+              
+              await new Promise(resolve => setTimeout(resolve, 150));
+              
+              const summary = await summarizeContent(scraped.markdown, state.query);
+              if (summary) {
+                enrichedSource.summary = summary;
+                
+                if (eventCallback) {
+                  eventCallback({
+                    type: 'source-complete',
+                    url: source.url,
+                    summary: summary
+                  });
+                }
               }
             } else if (scraped.error === 'timeout') {
               if (eventCallback) {
@@ -450,45 +581,127 @@ export class LangGraphSearchEngine {
           });
         }
         
-        const allSources = [
-          ...(state.sources || []).filter(s => s.content && s.content.length > SEARCH_CONFIG.MIN_CONTENT_LENGTH),
-          ...(state.scrapedSources || [])
-        ];
+        // Combine sources and remove duplicates by URL
+        const sourceMap = new Map<string, Source>();
         
-        if (eventCallback) {
-          eventCallback({
-            type: 'thinking',
-            message: `Found ${allSources.length} relevant sources with quality information`
-          });
-        }
+        // Add all sources (not just those with long content, since summaries contain key info)
+        (state.sources || []).forEach(s => sourceMap.set(s.url, s));
         
-        // Process sources with context processor
-        if (eventCallback) {
-          eventCallback({
-            type: 'thinking',
-            message: `Processing ${allSources.length} sources with AI summarization for optimal relevance...`
-          });
-        }
+        // Add scraped sources (may override with better content)
+        (state.scrapedSources || []).forEach(s => sourceMap.set(s.url, s));
         
-        try {
-          const processedSources = await contextProcessor.processSources(
-            state.query,
-            allSources,
-            state.searchQueries || []
-          );
+        const allSources = Array.from(sourceMap.values());
+        
+        // Check which questions have been answered
+        if (state.subQueries) {
+          const checkAnswersInSources = this.checkAnswersInSources.bind(this);
+          const updatedSubQueries = await checkAnswersInSources(state.subQueries, allSources);
           
-          return {
-            sources: allSources,
-            processedSources,
-            phase: 'synthesizing' as SearchPhase
-          };
-        } catch {
-            // Fallback to using all sources without processing
-          return {
-            sources: allSources,
-            processedSources: allSources,
-            phase: 'synthesizing' as SearchPhase
-          };
+          const answeredCount = updatedSubQueries.filter(sq => sq.answered).length;
+          const totalQuestions = updatedSubQueries.length;
+          const searchAttempt = (state.searchAttempt || 0) + 1;
+          
+          // Check if we have partial answers with decent confidence
+          const partialAnswers = updatedSubQueries.filter(sq => sq.confidence >= 0.3);
+          const hasPartialInfo = partialAnswers.length > answeredCount;
+          
+          if (eventCallback) {
+            if (answeredCount === totalQuestions) {
+              eventCallback({
+                type: 'thinking',
+                message: `Found answers to all ${totalQuestions} questions across ${allSources.length} sources`
+              });
+            } else if (answeredCount > 0) {
+              eventCallback({
+                type: 'thinking',
+                message: `Found answers to ${answeredCount} of ${totalQuestions} questions. Still missing: ${updatedSubQueries.filter(sq => !sq.answered).map(sq => sq.question).join(', ')}`
+              });
+            } else if (searchAttempt >= SEARCH_CONFIG.MAX_SEARCH_ATTEMPTS) {
+              // Only show "could not find" message when we've exhausted all attempts
+              eventCallback({
+                type: 'thinking',
+                message: `Could not find specific answers in ${allSources.length} sources. The information may not be publicly available.`
+              });
+            } else if (hasPartialInfo && searchAttempt >= 3) {
+              // If we have partial info and tried 3+ times, stop searching
+              eventCallback({
+                type: 'thinking',
+                message: `Found partial information. Moving forward with what's available.`
+              });
+            } else {
+              // For intermediate attempts, show a different message
+              eventCallback({
+                type: 'thinking',
+                message: `Searching for more specific information...`
+              });
+            }
+          }
+          
+          // If we haven't found all answers and haven't exceeded attempts, try again
+          // BUT stop if we have partial info and already tried 2+ times
+          if (answeredCount < totalQuestions && 
+              searchAttempt < SEARCH_CONFIG.MAX_SEARCH_ATTEMPTS &&
+              !(hasPartialInfo && searchAttempt >= 2)) {
+            return {
+              sources: allSources,
+              subQueries: updatedSubQueries,
+              searchAttempt,
+              phase: 'planning' as SearchPhase  // Go back to planning for retry
+            };
+          }
+          
+          // Otherwise proceed with what we have
+          try {
+            const processedSources = await contextProcessor.processSources(
+              state.query,
+              allSources,
+              state.searchQueries || []
+            );
+            
+            return {
+              sources: allSources,
+              processedSources,
+              subQueries: updatedSubQueries,
+              searchAttempt,
+              phase: 'synthesizing' as SearchPhase
+            };
+          } catch {
+            return {
+              sources: allSources,
+              processedSources: allSources,
+              subQueries: updatedSubQueries,
+              searchAttempt,
+              phase: 'synthesizing' as SearchPhase
+            };
+          }
+        } else {
+          // Fallback for queries without sub-queries
+          if (eventCallback && allSources.length > 0) {
+            eventCallback({
+              type: 'thinking',
+              message: `Found ${allSources.length} sources with quality information`
+            });
+          }
+          
+          try {
+            const processedSources = await contextProcessor.processSources(
+              state.query,
+              allSources,
+              state.searchQueries || []
+            );
+            
+            return {
+              sources: allSources,
+              processedSources,
+              phase: 'synthesizing' as SearchPhase
+            };
+          } catch {
+            return {
+              sources: allSources,
+              processedSources: allSources,
+              phase: 'synthesizing' as SearchPhase
+            };
+          }
         }
       })
       
@@ -639,9 +852,14 @@ export class LangGraphSearchEngine {
       )
       .addConditionalEdges(
         "analyze",
-        (state: SearchState) => state.phase === 'error' ? "handleError" : "synthesize",
+        (state: SearchState) => {
+          if (state.phase === 'error') return "handleError";
+          if (state.phase === 'planning') return "plan";  // Retry with new searches
+          return "synthesize";
+        },
         {
           handleError: "handleError",
+          plan: "plan",
           synthesize: "synthesize"
         }
       )
@@ -689,7 +907,9 @@ export class LangGraphSearchEngine {
         finalAnswer: undefined,
         followUpQuestions: undefined,
         error: undefined,
-        errorType: undefined
+        errorType: undefined,
+        subQueries: undefined,
+        searchAttempt: 0
       };
 
       // Configure with event callback
@@ -700,8 +920,11 @@ export class LangGraphSearchEngine {
         }
       };
 
-      // Invoke the graph - no need to iterate over stream since events are handled in nodes
-      await this.graph.invoke(initialState, config);
+      // Invoke the graph with increased recursion limit
+      await this.graph.invoke(initialState, {
+        ...config,
+        recursionLimit: 35  // Increased from default 25 to handle MAX_SEARCH_ATTEMPTS=5
+      });
     } catch (error) {
       onEvent({
         type: 'error',
@@ -711,10 +934,6 @@ export class LangGraphSearchEngine {
     }
   }
 
-  // Compatibility method for SearchEngine interface
-  private async simulateWork(ms: number): Promise<void> {
-    await new Promise(resolve => setTimeout(resolve, ms));
-  }
 
   // Get current date for context
   private getCurrentDateContext(): string {
@@ -761,62 +980,237 @@ Keep it natural and conversational, showing you truly understand their request.`
     return response.content.toString();
   }
 
-  private async generateSearchQueries(query: string, context?: { query: string; response: string }[]): Promise<string[]> {
-    let contextPrompt = '';
-    if (context && context.length > 0) {
-      contextPrompt = '\n\nPrevious conversation context:\n';
-      context.forEach(c => {
-        const limitedResponse = c.response.length > 500 
-          ? c.response.slice(0, 500) + '...' 
-          : c.response;
-        contextPrompt += `User: ${c.query}\nAssistant discussed: ${limitedResponse}\n\n`;
+  private async checkAnswersInSources(
+    subQueries: Array<{ question: string; searchQuery: string; answered: boolean; answer?: string; confidence: number; sources: string[] }>,
+    sources: Source[]
+  ): Promise<typeof subQueries> {
+    if (sources.length === 0) return subQueries;
+    
+    const messages = [
+      new SystemMessage(`Check which questions have been answered by the provided sources.
+
+For each question, determine:
+1. If the sources contain a direct answer
+2. The confidence level (0.0-1.0) that the question was fully answered
+3. A brief answer summary if found
+
+Guidelines:
+- For "who" questions about people/founders: Mark as answered (0.8+ confidence) if you find names of specific people
+- For "what" questions: Mark as answered (0.8+ confidence) if you find the specific information requested
+- For "when" questions: Mark as answered (0.8+ confidence) if you find dates or time periods
+- For "how many" questions: Require specific numbers (0.8+ confidence)
+- For comparison questions: Require information about all items being compared
+- If sources clearly answer the question but lack some minor details, use medium confidence (0.6-0.7)
+- If sources mention the topic but don't answer the specific question, use low confidence (< 0.3)
+
+Version number matching:
+- "0528" in the question matches "0528", "-0528", "May 28", or "May 28, 2025" in sources
+- Example: Question about "DeepSeek R1 0528" is ANSWERED if sources mention:
+  - "DeepSeek R1-0528" (exact match)
+  - "DeepSeek R1 was updated on May 28" (date match)
+  - "DeepSeek's R1 model was updated on May 28, 2025" (date match)
+- Hyphens and spaces in version numbers should be ignored when matching
+- If the summary mentions the product and a matching date/version, that's a full answer
+
+Special cases:
+- If asking about a product/model with a version number (e.g., "ModelX v2.5.1" or "Product 0528"), check BOTH:
+  1. If sources mention the EXACT version → mark as answered with high confidence (0.8+)
+  2. If sources only mention the base product → mark as answered with medium confidence (0.6+)
+- Example: Question "What is ProductX 1234?" 
+  - If sources mention "ProductX 1234" specifically → confidence: 0.9
+  - If sources only mention "ProductX" → confidence: 0.6
+- IMPORTANT: For questions like "What is DeepSeek R1 0528?", if sources contain "DeepSeek R1-0528" or "DeepSeek R1 0528", that's a DIRECT match (confidence 0.9+)
+- If multiple sources contradict whether something exists, use low confidence (0.3) but still provide what information was found
+
+Important: Be generous in recognizing answers. If the source clearly provides the information asked for (e.g., "The founders are X, Y, and Z"), mark it as answered with high confidence.
+
+Return ONLY a JSON array, no markdown formatting or code blocks:
+[
+  {
+    "question": "the original question",
+    "answered": true/false,
+    "confidence": 0.0-1.0,
+    "answer": "brief answer if found",
+    "sources": ["urls that contain the answer"]
+  }
+]`),
+      new HumanMessage(`Questions to check:
+${subQueries.map(sq => sq.question).join('\n')}
+
+Sources:
+${sources.slice(0, SEARCH_CONFIG.MAX_SOURCES_TO_CHECK).map(s => {
+  let sourceInfo = `URL: ${s.url}\nTitle: ${s.title}\n`;
+  
+  // Include summary if available (this is the key insight from the search)
+  if (s.summary) {
+    sourceInfo += `Summary: ${s.summary}\n`;
+  }
+  
+  // Include content preview
+  if (s.content) {
+    sourceInfo += `Content: ${s.content.slice(0, SEARCH_CONFIG.ANSWER_CHECK_PREVIEW)}\n`;
+  }
+  
+  return sourceInfo;
+}).join('\n---\n')}`)
+    ];
+
+    try {
+      const response = await this.llm.invoke(messages);
+      let content = response.content.toString();
+      
+      // Strip markdown code blocks if present
+      content = content.replace(/```json\s*/g, '').replace(/```\s*$/g, '').trim();
+      
+      const results = JSON.parse(content);
+      
+      // Update sub-queries with results
+      return subQueries.map(sq => {
+        const result = results.find((r: { question: string }) => r.question === sq.question);
+        if (result && result.confidence > sq.confidence) {
+          return {
+            ...sq,
+            answered: result.confidence >= SEARCH_CONFIG.MIN_ANSWER_CONFIDENCE,
+            answer: result.answer,
+            confidence: result.confidence,
+            sources: [...new Set([...sq.sources, ...(result.sources || [])])]
+          };
+        }
+        return sq;
       });
-      contextPrompt += '\nIf the current query refers to items from the previous conversation, make sure to include those specific items in your search queries.\n';
+    } catch (error) {
+      console.error('Error checking answers:', error);
+      return subQueries;
+    }
+  }
+
+  private async extractSubQueries(query: string): Promise<Array<{ question: string; searchQuery: string }>> {
+    const messages = [
+      new SystemMessage(`Extract the individual factual questions from this query. Each question should be something that can be definitively answered.
+
+IMPORTANT: 
+- When the user mentions something with a version/number (like "deepseek r1 0528"), include the FULL version in the question
+- For the search query, you can simplify slightly but keep key identifiers
+- Example: "deepseek r1 0528" → question: "What is DeepSeek R1 0528?", searchQuery: "DeepSeek R1 0528"
+
+Examples:
+"Who founded Anthropic and when" → 
+[
+  {"question": "Who founded Anthropic?", "searchQuery": "Anthropic founders"},
+  {"question": "When was Anthropic founded?", "searchQuery": "Anthropic founded date year"}
+]
+
+"What is OpenAI's Q3 2024 revenue and who is their VP of Infrastructure" →
+[
+  {"question": "What was OpenAI's Q3 2024 revenue?", "searchQuery": "OpenAI Q3 2024 revenue earnings"},
+  {"question": "Who is OpenAI's VP of Infrastructure?", "searchQuery": "OpenAI VP Infrastructure executive team"}
+]
+
+"Tell me about Product A + Model B version 123" →
+[
+  {"question": "What is Product A?", "searchQuery": "Product A features"},
+  {"question": "What is Model B version 123?", "searchQuery": "Model B"}
+]
+
+"Who founded Company X, compare Product A and Product B, and tell me about Technology Y + Model Z 1234" →
+[
+  {"question": "Who founded Company X?", "searchQuery": "Company X founders"},
+  {"question": "How do Product A and Product B compare?", "searchQuery": "Product A vs Product B comparison"},
+  {"question": "What is Technology Y?", "searchQuery": "Technology Y features"},
+  {"question": "What is Model Z 1234?", "searchQuery": "Model Z"}
+]
+
+Important: 
+- For comparison requests, create a single question/search that covers both items
+- If a term looks like it might be a model name with a version/date (like "R1 0528"), treat it as a single entity first, but create a search query that focuses on the main product name
+- Keep the number of sub-queries reasonable (aim for 3-5 max)
+
+Return ONLY a JSON array of {question, searchQuery} objects.`),
+      new HumanMessage(`Query: "${query}"`)
+    ];
+
+    try {
+      const response = await this.llm.invoke(messages);
+      return JSON.parse(response.content.toString());
+    } catch {
+      // Fallback: treat as single query
+      return [{ question: query, searchQuery: query }];
+    }
+  }
+
+  // This method was removed as it's not used in the current implementation
+  // Search queries are now generated from sub-queries in the plan node
+
+  private async generateAlternativeSearchQueries(
+    subQueries: Array<{ question: string; searchQuery: string; answered: boolean; answer?: string; confidence: number; sources: string[] }>,
+    previousAttempts: number
+  ): Promise<string[]> {
+    const unansweredQueries = subQueries.filter(sq => !sq.answered || sq.confidence < SEARCH_CONFIG.MIN_ANSWER_CONFIDENCE);
+    
+    // If we're on attempt 3 and still searching for the same thing, just give up on that specific query
+    if (previousAttempts >= 2) {
+      const problematicQueries = unansweredQueries.filter(sq => {
+        // Check if the question contains a version number or specific identifier that might not exist
+        const hasVersionPattern = /\b\d{3,4}\b|\bv\d+\.\d+|\bversion\s+\d+/i.test(sq.question);
+        const hasFailedMultipleTimes = previousAttempts >= 2;
+        return hasVersionPattern && hasFailedMultipleTimes;
+      });
+      
+      if (problematicQueries.length > 0) {
+        // Return generic searches that might find partial info
+        return problematicQueries.map(sq => {
+          const baseTerm = sq.question.replace(/0528|specific version/gi, '').trim();
+          return baseTerm.substring(0, 50); // Keep it short
+        });
+      }
     }
     
     const messages = [
       new SystemMessage(`${this.getCurrentDateContext()}
 
-Analyze this query and generate appropriate search queries.
+Generate ALTERNATIVE search queries for questions that weren't answered in previous attempts.
 
-CRITICAL: DO NOT add years, dates, or temporal qualifiers (like "2024", "2025", "latest", "current") to search queries UNLESS the user's query explicitly contains words like "latest", "current", "recent", "new", "2024", "2025", etc.
+Previous search attempts: ${previousAttempts}
+Previous queries that didn't find answers:
+${unansweredQueries.map(sq => `- Question: "${sq.question}"\n  Previous search: "${sq.searchQuery}"`).join('\n')}
 
-Instructions:
-- For simple queries (e.g., "What is X?") → use just 1 search
-- For queries with multiple distinct questions → create a separate search for EACH question
-- For lists or multiple items → create individual searches for each item
-- Don't artificially group unrelated topics together
-- Each search should be focused and specific
-- If the query refers to previous context, include the specific items from context
+IMPORTANT: If searching for something with a specific version/date that keeps failing (like "R1 0528"), try searching for just the base product without the version.
 
-Examples:
-- "What is firecrawl?" → 1 search: "firecrawl overview features documentation"
-- "Who is John Doe?" → 1 search: "who is John Doe"
-- "What is X? How does Y work? Where to buy Z?" → 3 separate searches
-- "Tell me about A, B, C, D, and E" → 5 separate searches (one for each)
-- "Compare React vs Vue vs Angular" → 3 searches (one for each framework)
-- "What are the latest programming languages?" → 1 search: "latest programming languages 2024"
-- "Current AI trends" → 1 search: "current AI trends 2024"
+Generate NEW search queries using these strategies:
+1. Try broader or more general terms
+2. Try different phrasings or synonyms
+3. Remove specific qualifiers (like years or versions) if they're too restrictive
+4. Try searching for related concepts that might contain the answer
+5. For products that might not exist, search for the company or base product name
 
-Important: If the user asks about multiple distinct things, create separate searches. Don't force them into fewer searches.
+Examples of alternative searches:
+- Original: "ModelX 2024.05" → Alternative: "ModelX latest version"
+- Original: "OpenAI Q3 2024 revenue" → Alternative: "OpenAI financial results 2024"
+- Original: "iPhone 15 Pro features" → Alternative: "latest iPhone specifications"
 
-Return only the search queries, one per line.`),
-      new HumanMessage(`Query: "${query}"${contextPrompt}`)
+Return one alternative search query per unanswered question, one per line.`),
+      new HumanMessage(`Generate alternative searches for these ${unansweredQueries.length} unanswered questions.`)
     ];
-    
-    const response = await this.llm.invoke(messages);
-    const result = response.content.toString();
-    
-    const queries = result
-      .split('\n')
-      .map(q => q.trim())
-      .map(q => q.replace(/^["']|["']$/g, ''))
-      .filter(q => q.length > 0)
-      .filter(q => !q.match(/^```/))
-      .filter(q => !q.match(/^[-*#]/))
-      .filter(q => q.length > 3);
-    
-    return queries.slice(0, SEARCH_CONFIG.MAX_SEARCH_QUERIES);
+
+    try {
+      const response = await this.llm.invoke(messages);
+      const result = response.content.toString();
+      
+      const queries = result
+        .split('\n')
+        .map(q => q.trim())
+        .map(q => q.replace(/^["']|["']$/g, ''))
+        .map(q => q.replace(/^\d+\.\s*/, ''))
+        .map(q => q.replace(/^[-*#]\s*/, ''))
+        .filter(q => q.length > 0)
+        .filter(q => !q.match(/^```/))
+        .filter(q => q.length > 3);
+      
+      return queries.slice(0, SEARCH_CONFIG.MAX_SEARCH_QUERIES);
+    } catch {
+      // Fallback: return original queries with slight modifications
+      return unansweredQueries.map(sq => sq.searchQuery + " news reports").slice(0, SEARCH_CONFIG.MAX_SEARCH_QUERIES);
+    }
   }
 
   private scoreContent(content: string, query: string): number {
@@ -836,13 +1230,18 @@ Return only the search queries, one per line.`),
       const messages = [
         new SystemMessage(`${this.getCurrentDateContext()}
 
-Extract one key finding from this content that's relevant to the search query.
+Extract ONE key finding from this content that's SPECIFICALLY relevant to the search query.
+
+CRITICAL: Only summarize information that directly relates to the search query.
+- If searching for "Samsung phones", only mention Samsung phone information
+- If searching for "Firecrawl founders", only mention founder information
+- If no relevant information is found, just return the most relevant fact from the page
 
 Instructions:
-- Return just ONE sentence summarizing the most important finding
-- Make it specific and factual (include numbers, dates, or specific details if relevant)
+- Return just ONE sentence with a specific finding
+- Include numbers, dates, or specific details when available
 - Keep it under ${SEARCH_CONFIG.SUMMARY_CHAR_LIMIT} characters
-- Don't include any prefixes like "The article states" or "According to"`),
+- Don't say "No relevant information was found" - find something relevant to the current search`),
         new HumanMessage(`Query: "${query}"\n\nContent: ${content.slice(0, 2000)}`)
       ];
       
@@ -906,7 +1305,7 @@ Answer the user's question based on the provided sources. Provide a clear, compr
   private async generateFollowUpQuestions(
     originalQuery: string,
     answer: string,
-    sources: Source[],
+    _sources: Source[],
     context?: { query: string; response: string }[]
   ): Promise<string[]> {
     try {
