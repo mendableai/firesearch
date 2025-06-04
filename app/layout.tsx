@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { cn } from "@/lib/utils";
+import { SettingsProvider } from "@/lib/settings-context";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -27,9 +28,11 @@ export default function RootLayout({
           inter.variable
         )}
       >
-        <main className="">
-          {children}
-        </main>
+        <SettingsProvider>
+          <main className="">
+            {children}
+          </main>
+        </SettingsProvider>
       </body>
     </html>
   );

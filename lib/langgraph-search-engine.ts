@@ -3,7 +3,8 @@ import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { FirecrawlClient } from './firecrawl';
 import { ContextProcessor } from './context-processor';
-import { SEARCH_CONFIG, MODEL_CONFIG } from './config';
+import { SEARCH_CONFIG } from './config';
+import { getCurrentModelsFromSettings, getCurrentTemperature, getSearchConfigFromSettings } from './settings-utils';
 
 // Event types remain the same for frontend compatibility
 export type SearchPhase = 
@@ -142,7 +143,7 @@ const SearchStateAnnotation = Annotation.Root({
   }),
   maxRetries: Annotation<number>({
     reducer: (x, y) => y ?? x,
-    default: () => SEARCH_CONFIG.MAX_RETRIES
+    default: () => getSearchConfigFromSettings().MAX_RETRIES
   }),
   retryCount: Annotation<number>({
     reducer: (x, y) => y ?? x,
@@ -168,25 +169,30 @@ export class LangGraphSearchEngine {
   private streamingLlm: ChatOpenAI;
   private checkpointer?: MemorySaver;
 
-  constructor(firecrawl: FirecrawlClient, options?: { enableCheckpointing?: boolean }) {
+  constructor(firecrawl: FirecrawlClient, options?: { enableCheckpointing?: boolean; openaiApiKey?: string }) {
     this.firecrawl = firecrawl;
     this.contextProcessor = new ContextProcessor();
     
-    const apiKey = process.env.OPENAI_API_KEY;
+    // Use provided API key or fall back to environment variable
+    const apiKey = options?.openaiApiKey || process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      throw new Error('OPENAI_API_KEY environment variable is not set');
+      throw new Error('OpenAI API key is required. Please provide it via options or set OPENAI_API_KEY environment variable.');
     }
     
-    // Initialize LangChain models
+    // Get current models and temperature from settings
+    const models = getCurrentModelsFromSettings();
+    const temperature = getCurrentTemperature();
+    
+    // Initialize LangChain models with settings
     this.llm = new ChatOpenAI({
-      modelName: MODEL_CONFIG.FAST_MODEL,
-      temperature: MODEL_CONFIG.TEMPERATURE,
+      modelName: models.fast,
+      temperature: temperature,
       openAIApiKey: apiKey,
     });
     
     this.streamingLlm = new ChatOpenAI({
-      modelName: MODEL_CONFIG.QUALITY_MODEL,
-      temperature: MODEL_CONFIG.TEMPERATURE,
+      modelName: models.quality,
+      temperature: temperature,
       streaming: true,
       openAIApiKey: apiKey,
     });
