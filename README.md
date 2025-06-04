@@ -124,7 +124,9 @@ docker run -p 3000:3000 --env-file .env.local firesearch
 - **📊 Data Visualization** - Charts and graphs for research insights
 
 ### LLM Provider Expansions
-Support for additional providers including local models, specialized reasoning engines, and emerging AI platforms.
+- **🏠 Local LLM Support** - Ollama, LM Studio, and other local inference servers
+- **🔒 Self-hosted Firecrawl** - Connect to your own Firecrawl instance for enhanced security
+- **🚀 Emerging Providers** - Support for specialized reasoning engines and new AI platforms
 
 ## 🏗️ Architecture
 
@@ -285,6 +287,30 @@ const llmResponse = await queryLLM({
 });
 ```
 
+## 🏠 Self-Hosting & Privacy
+
+Firesearch is designed with privacy and control in mind. Future versions will support:
+
+### **🔒 Self-hosted Firecrawl Integration**
+Connect to your own [Firecrawl instance](https://docs.firecrawl.dev/contributing/self-host) for:
+- **Enhanced Security** - All data remains within your infrastructure
+- **Compliance** - Meet strict regulatory requirements (GDPR, HIPAA, SOC2)
+- **Cost Control** - Avoid per-request API fees for high-volume usage
+- **Customization** - Tailor scraping behavior for specific needs
+
+### **🏠 Local LLM Support**
+Run AI models locally for complete privacy:
+- **Ollama Integration** - Support for Llama, Mistral, and other open models
+- **LM Studio Support** - Easy local model management and inference
+- **Custom Endpoints** - Connect to any OpenAI-compatible local server
+- **Zero Data Sharing** - All processing happens on your hardware
+
+### **🛡️ Benefits of Self-Hosting**
+- **Complete Privacy** - No data ever leaves your environment
+- **Cost Optimization** - Reduce API costs for high-volume usage
+- **Regulatory Compliance** - Meet enterprise security requirements
+- **Custom Configuration** - Fine-tune behavior for specific use cases
+
 ## 🔧 Deployment
 
 ### Vercel (Recommended)
@@ -318,6 +344,11 @@ OPENROUTER_API_KEY=your_openrouter_key
 GROQ_API_KEY=your_groq_key
 GROK_API_KEY=your_grok_key
 DEEPSEEK_API_KEY=your_deepseek_key
+
+# Self-hosting Options (Coming Soon)
+FIRECRAWL_API_URL=http://localhost:3002  # For self-hosted Firecrawl
+OLLAMA_BASE_URL=http://localhost:11434   # For local Ollama models
+LM_STUDIO_BASE_URL=http://localhost:1234 # For LM Studio local server
 ```
 
 ## 📄 License

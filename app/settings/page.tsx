@@ -800,6 +800,24 @@ export default function SettingsPage() {
                           Advanced reasoning models with competitive performance and cost efficiency
                         </p>
                       </div>
+                      <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="w-2 h-2 bg-emerald-500 rounded-full"></div>
+                          <h5 className="font-medium text-gray-900 dark:text-gray-100">Local LLM Provider Support</h5>
+                        </div>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          Support for local models via Ollama, LM Studio, and other local inference servers
+                        </p>
+                      </div>
+                      <div className="bg-gray-50 dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center gap-2 mb-2">
+                          <div className="w-2 h-2 bg-cyan-500 rounded-full"></div>
+                          <h5 className="font-medium text-gray-900 dark:text-gray-100">Self-hosted Firecrawl Support</h5>
+                        </div>
+                        <p className="text-sm text-gray-600 dark:text-gray-400">
+                          Connect to your own Firecrawl instance for enhanced security and compliance
+                        </p>
+                      </div>
                     </div>
                   </div>
 
