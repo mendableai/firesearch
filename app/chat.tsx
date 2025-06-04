@@ -9,6 +9,7 @@ import { MarkdownRenderer } from './markdown-renderer';
 import { CitationTooltip } from './citation-tooltip';
 import Image from 'next/image';
 import { getFaviconUrl, getDefaultFavicon, markFaviconFailed } from '@/lib/favicon-utils';
+import { useSettings } from '@/lib/settings-context';
 import {
   Dialog,
   DialogContent,
@@ -183,6 +184,7 @@ function SourcesList({ sources }: { sources: Source[] }) {
 }
 
 export function Chat() {
+  const { settings } = useSettings();
   const [messages, setMessages] = useState<Array<{
     id: string;
     role: 'user' | 'assistant';
@@ -206,7 +208,7 @@ export function Chat() {
     setShowSuggestions(false);
   };
 
-  // Check for environment variables on mount
+  // Check for environment variables and settings on mount
   useEffect(() => {
     const checkEnvironment = async () => {
       setIsCheckingEnv(true);
@@ -214,10 +216,15 @@ export function Chat() {
         const response = await fetch('/api/check-env');
         const data = await response.json();
         
-        if (data.environmentStatus) {
-          // Only check for Firecrawl API key since we can pass it from frontend
-          // OpenAI and Anthropic keys must be in environment
-          setHasApiKey(data.environmentStatus.FIRECRAWL_API_KEY);
+        // Check for Firecrawl API key from environment or settings
+        const hasEnvKey = data.FIRECRAWL_API_KEY;
+        const hasSettingsKey = !!settings.apiKeys.firecrawl;
+        
+        setHasApiKey(hasEnvKey || hasSettingsKey);
+        
+        // If we have a settings key but no env key, set it for use
+        if (!hasEnvKey && hasSettingsKey && settings.apiKeys.firecrawl) {
+          setFirecrawlApiKey(settings.apiKeys.firecrawl);
         }
       } catch (error) {
         console.error('Failed to check environment:', error);
@@ -228,7 +235,7 @@ export function Chat() {
     };
 
     checkEnvironment();
-  }, []);
+  }, [settings.apiKeys.firecrawl]);
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -306,8 +313,10 @@ export function Chat() {
       }
       
       // Get search stream with context
-      // Pass the API key only if user provided one, otherwise let server use env var
-      const { stream } = await search(query, conversationContext, firecrawlApiKey || undefined);
+      // Pass API keys from settings if available
+      const firecrawlKey = firecrawlApiKey || settings.apiKeys.firecrawl;
+      const openaiKey = settings.apiKeys.openai;
+      const { stream } = await search(query, conversationContext, firecrawlKey, openaiKey);
       let finalContent = '';
       
       // Read stream and update events
@@ -658,7 +667,7 @@ export function Chat() {
           <DialogHeader>
             <DialogTitle>Firecrawl API Key Required</DialogTitle>
             <DialogDescription>
-              To use Firesearch, you need a Firecrawl API key. You can get one for free.
+              To use Firesearch, you need a Firecrawl API key. You can get one for free or configure it in Settings.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
