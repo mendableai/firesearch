@@ -20,13 +20,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 
-const SUGGESTED_QUERIES = [
-  "Who are the founders of Firecrawl?",
-  "When did NVIDIA release the RTX 4080 Super?",
-  "Compare the latest iPhone 16 and Samsung Galaxy S25",
-  "Compare Claude 4 to OpenAI's o3"
-];
-
 // Helper component for sources list
 function SourcesList({ sources }: { sources: Source[] }) {
   const [showSourcesPanel, setShowSourcesPanel] = useState(false);
@@ -187,24 +180,23 @@ export function Chat() {
     id: string;
     role: 'user' | 'assistant';
     content: string | React.ReactNode;
-    isSearch?: boolean;
-    searchResults?: string; // Store search results for context
+    isSearch?: boolean; // Indicates if this message is part of the search process display
+    searchResults?: string; // Store raw search results string for context if needed
+    bookName?: string; // To display what book was searched for
+    author?: string;
   }>>([]);
-  const [input, setInput] = useState('');
+  const [bookNameInput, setBookNameInput] = useState('');
+  const [authorInput, setAuthorInput] = useState('');
   const [isSearching, setIsSearching] = useState(false);
-  const [showSuggestions, setShowSuggestions] = useState(false);
-  const [hasShownSuggestions, setHasShownSuggestions] = useState(false);
+  // const [showSuggestions, setShowSuggestions] = useState(false); // Suggestions not used for book summary
+  // const [hasShownSuggestions, setHasShownSuggestions] = useState(false);
   const [firecrawlApiKey, setFirecrawlApiKey] = useState<string>('');
   const [hasApiKey, setHasApiKey] = useState<boolean>(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState<boolean>(false);
-  const [, setIsCheckingEnv] = useState<boolean>(true);
-  const [pendingQuery, setPendingQuery] = useState<string>('');
+  const [, setIsCheckingEnv] = useState<boolean>(true); // To manage env check state
+  const [pendingSearch, setPendingSearch] = useState<{ bookName: string; author?: string } | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
 
-  const handleSelectSuggestion = (suggestion: string) => {
-    setInput(suggestion);
-    setShowSuggestions(false);
-  };
 
   // Check for environment variables on mount
   useEffect(() => {
@@ -215,13 +207,11 @@ export function Chat() {
         const data = await response.json();
         
         if (data.environmentStatus) {
-          // Only check for Firecrawl API key since we can pass it from frontend
-          // OpenAI and Anthropic keys must be in environment
           setHasApiKey(data.environmentStatus.FIRECRAWL_API_KEY);
         }
       } catch (error) {
         console.error('Failed to check environment:', error);
-        setHasApiKey(false);
+        setHasApiKey(false); // Assume no key if check fails
       } finally {
         setIsCheckingEnv(false);
       }
@@ -237,80 +227,69 @@ export function Chat() {
     }
   }, [messages]);
 
-  const saveApiKey = () => {
+  const saveApiKeyAndSearch = () => {
     if (firecrawlApiKey.trim()) {
       setHasApiKey(true);
       setShowApiKeyModal(false);
-      toast.success('API key saved! Starting your search...');
+      toast.success('API key saved! Starting your book summary generation...');
       
-      // Continue with the pending query
-      if (pendingQuery) {
-        performSearch(pendingQuery);
-        setPendingQuery('');
+      if (pendingSearch) {
+        performSearch(pendingSearch.bookName, pendingSearch.author);
+        setPendingSearch(null);
       }
     }
   };
 
-  // Listen for follow-up question events
+  // Listen for follow-up question (key theme) events
   useEffect(() => {
-    const handleFollowUpQuestion = async (event: Event) => {
+    const handleFollowUp = async (event: Event) => {
       const customEvent = event as CustomEvent;
-      const question = customEvent.detail.question;
-      setInput(question);
-      
-      // Trigger the search immediately
-      setTimeout(() => {
-        const form = document.querySelector('form');
-        if (form) {
-          form.dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
-        }
-      }, 100);
+      const theme = customEvent.detail.question; // Re-using 'question' for theme
+      // For book summaries, clicking a theme might mean asking a new question about it
+      // For now, let's just set it in the input field for a new search if desired
+      // Or it could trigger a more specific search related to that theme + book.
+      // For simplicity, we'll just log it or potentially set it for a new input.
+      // User can then refine or search.
+      // setBookNameInput(`${messages[messages.length-1]?.bookName} - ${theme}`); // Example: prefill
+      // setAuthorInput(messages[messages.length-1]?.author || '');
+      toast.info(`Exploring theme: ${theme}. You can ask a new question related to this theme and the book.`);
     };
 
-    document.addEventListener('followUpQuestion', handleFollowUpQuestion);
+    document.addEventListener('followUpQuestion', handleFollowUp);
     return () => {
-      document.removeEventListener('followUpQuestion', handleFollowUpQuestion);
+      document.removeEventListener('followUpQuestion', handleFollowUp);
     };
-  }, []);
+  }, [messages]);
 
-  const performSearch = async (query: string) => {
+  const performSearch = async (bookName: string, author?: string) => {
     setIsSearching(true);
 
-    // Create assistant message with search display
     const assistantMsgId = (Date.now() + 1).toString();
     const events: SearchEvent[] = [];
     
     setMessages(prev => [...prev, {
       id: assistantMsgId,
       role: 'assistant',
-      content: <SearchDisplay events={events} />,
-      isSearch: true
+      content: <SearchDisplay events={events} />, // Shows "Understanding request..." etc.
+      isSearch: true,
+      bookName, // Store for context
+      author
     }]);
 
     try {
-      // Build context from previous messages by pairing user queries with assistant responses
       const conversationContext: Array<{ query: string; response: string }> = [];
+      // Context building might be less relevant for first summary of a book.
+      // Could be used if user asks follow-up questions about the summary later.
+      // For now, keeping it simple.
       
-      for (let i = 0; i < messages.length; i++) {
-        const msg = messages[i];
-        // Find user messages followed by assistant messages with search results
-        if (msg.role === 'user' && i + 1 < messages.length) {
-          const nextMsg = messages[i + 1];
-          if (nextMsg.role === 'assistant' && nextMsg.searchResults) {
-            conversationContext.push({
-              query: msg.content as string,
-              response: nextMsg.searchResults
-            });
-          }
-        }
-      }
-      
-      // Get search stream with context
-      // Pass the API key only if user provided one, otherwise let server use env var
-      const { stream } = await search(query, conversationContext, firecrawlApiKey || undefined);
+      const { stream } = await search({
+        bookName,
+        author,
+        context: conversationContext,
+        apiKey: firecrawlApiKey || undefined
+      });
       let finalContent = '';
       
-      // Read stream and update events
       let streamingStarted = false;
       const resultMsgId = (Date.now() + 2).toString();
       
@@ -318,37 +297,33 @@ export function Chat() {
         if (event) {
           events.push(event);
           
-          // Handle content streaming
           if (event.type === 'content-chunk') {
-            const content = events
+            const currentStreamedContent = events
               .filter(e => e.type === 'content-chunk')
               .map(e => e.type === 'content-chunk' ? e.chunk : '')
               .join('');
             
             if (!streamingStarted) {
               streamingStarted = true;
-              // Add new message for streaming content
               setMessages(prev => [...prev, {
                 id: resultMsgId,
                 role: 'assistant',
-                content: <MarkdownRenderer content={content} streaming={true} />,
-                isSearch: false
+                content: <MarkdownRenderer content={currentStreamedContent} streaming={true} />,
+                isSearch: false,
+                bookName,
+                author
               }]);
             } else {
-              // Update streaming message
               setMessages(prev => prev.map(msg => 
                 msg.id === resultMsgId 
-                  ? { ...msg, content: <MarkdownRenderer content={content} streaming={true} /> }
+                  ? { ...msg, content: <MarkdownRenderer content={currentStreamedContent} streaming={true} /> }
                   : msg
               ));
             }
           }
           
-          // Capture final result
           if (event.type === 'final-result') {
             finalContent = event.content;
-            
-            // Update the streaming message with final content and sources
             setMessages(prev => prev.map(msg => 
               msg.id === resultMsgId 
                 ? {
@@ -360,19 +335,18 @@ export function Chat() {
                         </div>
                         <CitationTooltip sources={event.sources || []} />
                         
-                        {/* Follow-up Questions */}
                         {event.followUpQuestions && event.followUpQuestions.length > 0 && (
                           <div className="mt-8 pt-6 border-t border-gray-200 dark:border-gray-700">
                             <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
-                              Follow-up questions
+                              Key Themes / Further Exploration
                             </h3>
                             <div className="space-y-2">
-                              {event.followUpQuestions.map((question, index) => (
+                              {event.followUpQuestions.map((theme, index) => (
                                 <button
                                   key={index}
                                   onClick={() => {
                                     const evt = new CustomEvent('followUpQuestion', { 
-                                      detail: { question },
+                                      detail: { question: theme }, // Re-using 'question' for theme
                                       bubbles: true 
                                     });
                                     document.dispatchEvent(evt);
@@ -381,7 +355,7 @@ export function Chat() {
                                 >
                                   <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-700 dark:text-gray-300 group-hover:text-gray-900 dark:group-hover:text-gray-100">
-                                      {question}
+                                      {theme}
                                     </span>
                                     <svg className="w-4 h-4 text-gray-400 group-hover:text-orange-500 flex-shrink-0 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
@@ -392,18 +366,15 @@ export function Chat() {
                             </div>
                           </div>
                         )}
-                        
-                        {/* Sources */}
                         <SourcesList sources={event.sources || []} />
                       </div>
                     ),
-                    searchResults: finalContent
+                    searchResults: finalContent // Store the full summary text
                   }
                 : msg
             ));
           }
           
-          // Update research box with new events
           setMessages(prev => prev.map(msg => 
             msg.id === assistantMsgId 
               ? { ...msg, content: <SearchDisplay events={[...events]} />, searchResults: finalContent }
@@ -413,29 +384,25 @@ export function Chat() {
       }
     } catch (error) {
       console.error('Search error:', error);
-      // Remove the search display message
       setMessages(prev => prev.filter(msg => msg.id !== assistantMsgId));
-      
-      // Show error message to user
-      const errorMessage = error instanceof Error ? error.message : 'An error occurred during search';
+      const errorMessage = error instanceof Error ? error.message : 'An error occurred during summary generation.';
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'assistant',
         content: (
           <div className="p-4 border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 rounded-lg">
-            <p className="text-red-700 dark:text-red-300 font-medium">Search Error</p>
+            <p className="text-red-700 dark:text-red-300 font-medium">Summary Generation Error</p>
             <p className="text-red-600 dark:text-red-400 text-sm mt-1">{errorMessage}</p>
             {(errorMessage.includes('API key') || errorMessage.includes('OPENAI_API_KEY')) && (
               <p className="text-red-600 dark:text-red-400 text-sm mt-2">
-                Please ensure all required API keys are set in your environment variables:
-                <br />• OPENAI_API_KEY (for GPT-4o)
-                <br />• ANTHROPIC_API_KEY (optional, for Claude)
-                <br />• FIRECRAWL_API_KEY (can be provided via UI)
+                Please ensure all required API keys are set:
+                <br />• OPENAI_API_KEY (for GPT models)
+                <br />• FIRECRAWL_API_KEY (can be provided via UI if not in .env)
               </p>
             )}
           </div>
         ),
-        isSearch: false
+        isSearch: false, bookName, author
       }]);
     } finally {
       setIsSearching(false);
@@ -444,113 +411,94 @@ export function Chat() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isSearching) return;
-    setShowSuggestions(false);
+    if (!bookNameInput.trim() || isSearching) return;
 
-    const userMessage = input;
-    setInput('');
+    const currentBookName = bookNameInput;
+    const currentAuthor = authorInput.trim() || undefined;
 
-    // Check if we have API key
+    setBookNameInput('');
+    setAuthorInput('');
+
     if (!hasApiKey) {
-      // Store the query and show modal
-      setPendingQuery(userMessage);
+      setPendingSearch({ bookName: currentBookName, author: currentAuthor });
       setShowApiKeyModal(true);
-      
-      // Still add user message to show what they asked
-      const userMsgId = Date.now().toString();
       setMessages(prev => [...prev, {
-        id: userMsgId,
+        id: Date.now().toString(),
         role: 'user',
-        content: userMessage,
-        isSearch: true
+        content: `Book: ${currentBookName}` + (currentAuthor ? ` by ${currentAuthor}` : ''),
+        isSearch: false,
+        bookName: currentBookName,
+        author: currentAuthor
       }]);
       return;
     }
 
-    // Add user message
-    const userMsgId = Date.now().toString();
     setMessages(prev => [...prev, {
-      id: userMsgId,
+      id: Date.now().toString(),
       role: 'user',
-      content: userMessage,
-      isSearch: true
+      content: `Generate summary for: ${currentBookName}` + (currentAuthor ? ` by ${currentAuthor}` : ''),
+      isSearch: false, // User message itself isn't a search display
+      bookName: currentBookName,
+      author: currentAuthor
     }]);
 
-    // Perform the search
-    await performSearch(userMessage);
+    await performSearch(currentBookName, currentAuthor);
   };
 
   return (
     <div className="flex flex-col flex-1">
       {messages.length === 0 ? (
-        // Center input when no messages
         <div className="flex-1 flex items-center justify-center px-4 sm:px-6 lg:px-8">
           <div className="w-full max-w-4xl">
-            <form onSubmit={handleSubmit}>
-              <div className="relative">
-                <input
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div>
+                <label htmlFor="bookName" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Book Name
+                </label>
+                <Input
+                  id="bookName"
                   type="text"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onFocus={() => {
-                    if (!hasShownSuggestions && messages.length === 0) {
-                      setShowSuggestions(true);
-                      setHasShownSuggestions(true);
-                    }
-                  }}
-                  onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-                  placeholder="Enter query..."
-                  className="w-full h-14 rounded-full border border-zinc-200 bg-white pl-6 pr-16 text-base ring-offset-white file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus-visible:ring-orange-400 shadow-sm"
+                  value={bookNameInput}
+                  onChange={(e) => setBookNameInput(e.target.value)}
+                  placeholder="e.g., Atomic Habits"
+                  className="w-full h-12 rounded-lg border-zinc-200 dark:border-zinc-800"
                   disabled={isSearching}
                 />
-                <button
-                  type="submit"
-                  disabled={isSearching || !input.trim()}
-                  className="absolute right-2 top-2 h-10 w-10 bg-orange-500 hover:bg-orange-600 text-white rounded-full disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-200 flex items-center justify-center"
-                >
-                  {isSearching ? (
-                    <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                    </svg>
-                  ) : (
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                    </svg>
-                  )}
-                </button>
-                
-                {/* Suggestions dropdown - only show on initial load */}
-                {showSuggestions && !input && messages.length === 0 && (
-                  <div className="absolute top-full mt-2 w-full bg-white dark:bg-zinc-900 rounded-2xl shadow-lg border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-                    <div className="p-2">
-                      <p className="text-xs text-gray-500 dark:text-gray-400 px-3 py-2 font-medium">Try searching for:</p>
-                      {SUGGESTED_QUERIES.map((suggestion, index) => (
-                        <button
-                          key={index}
-                          type="button"
-                          onClick={() => handleSelectSuggestion(suggestion)}
-                          className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-zinc-800 rounded-lg transition-colors text-sm text-gray-700 dark:text-gray-300"
-                        >
-                          <div className="flex items-center gap-2">
-                            <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                            </svg>
-                            <span className="line-clamp-1">{suggestion}</span>
-                          </div>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
               </div>
+              <div>
+                <label htmlFor="authorName" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  Author (Optional)
+                </label>
+                <Input
+                  id="authorName"
+                  type="text"
+                  value={authorInput}
+                  onChange={(e) => setAuthorInput(e.target.value)}
+                  placeholder="e.g., James Clear"
+                  className="w-full h-12 rounded-lg border-zinc-200 dark:border-zinc-800"
+                  disabled={isSearching}
+                />
+              </div>
+              <Button
+                type="submit"
+                disabled={isSearching || !bookNameInput.trim()}
+                className="w-full h-12 bg-orange-500 hover:bg-orange-600 text-white rounded-lg disabled:opacity-50"
+              >
+                {isSearching ? (
+                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                ) : (
+                  'Generate Book Summary'
+                )}
+              </Button>
             </form>
           </div>
         </div>
       ) : (
         <>
-          {/* Messages */}
-          <div className="flex-1 overflow-auto scrollbar-hide px-4 sm:px-6 lg:px-8 py-6">
+          <div ref={messagesContainerRef} className="flex-1 overflow-y-auto scrollbar-hide px-4 sm:px-6 lg:px-8 py-6">
             <div className="max-w-4xl mx-auto space-y-6">
               {messages.map(msg => (
                 <div
@@ -558,97 +506,75 @@ export function Chat() {
                   className={`${
                     msg.role === 'user' 
                       ? 'flex justify-end' 
-                      : 'w-full'
+                      : 'w-full' // Assistant messages take full width
                   }`}
                 >
                   {msg.role === 'user' ? (
                     <div className="max-w-2xl">
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 text-right">You</div>
                       <span className="inline-block px-5 py-3 rounded-2xl bg-[#FBFAF9] dark:bg-zinc-800 text-[#36322F] dark:text-zinc-100">
                         {msg.content}
                       </span>
                     </div>
                   ) : (
-                    <div className="w-full">{msg.content}</div>
+                     <div className="w-full">
+                        <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">
+                          AI Summary Generator {msg.bookName ? `for "${msg.bookName}"` : ''}
+                        </div>
+                        {msg.content}
+                      </div>
                   )}
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Input */}
-          <div className="bg-white dark:bg-zinc-950 px-4 sm:px-6 lg:px-8 py-6">
-            <form onSubmit={handleSubmit} className="max-w-4xl mx-auto">
-          <div className="relative">
-            <input
-              type="text"
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onFocus={() => {
-                if (!hasShownSuggestions) {
-                  setShowSuggestions(true);
-                  setHasShownSuggestions(true);
-                }
-              }}
-              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-              placeholder="Enter query..."
-              className="w-full h-14 rounded-full border border-zinc-200 bg-white pl-6 pr-16 text-base ring-offset-white file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-zinc-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-offset-zinc-950 dark:placeholder:text-zinc-400 dark:focus-visible:ring-orange-400 shadow-sm"
-              disabled={isSearching}
-            />
-            
-            <button
-              type="submit"
-              disabled={!input.trim() || isSearching}
-              className="absolute right-2 top-1/2 -translate-y-1/2 w-10 h-10 rounded-full bg-orange-500 hover:bg-orange-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white flex items-center justify-center transition-colors shadow-sm"
-            >
-              {isSearching ? (
-                <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                </svg>
-              ) : (
-                <svg
-                  xmlns="http://www.w3.org/2000/svg"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="11" cy="11" r="8" />
-                  <path d="m21 21-4.35-4.35" />
-                </svg>
-              )}
-            </button>
-            
-            {/* Suggestions dropdown - positioned to show above input */}
-            {showSuggestions && !input && (
-              <div className="absolute bottom-full mb-2 w-full bg-white dark:bg-zinc-900 rounded-2xl shadow-lg border border-zinc-200 dark:border-zinc-800 overflow-hidden">
-                <div className="p-2">
-                  <p className="text-xs text-gray-500 dark:text-gray-400 px-3 py-2 font-medium">Try searching for:</p>
-                  {SUGGESTED_QUERIES.map((suggestion, index) => (
-                    <button
-                      key={index}
-                      type="button"
-                      onClick={() => handleSelectSuggestion(suggestion)}
-                      className="w-full text-left px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-zinc-800 rounded-lg transition-colors text-sm text-gray-700 dark:text-gray-300"
-                    >
-                      <div className="flex items-center gap-2">
-                        <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
-                        <span className="line-clamp-1">{suggestion}</span>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+          {/* Input form at the bottom */}
+          <div className="bg-white dark:bg-zinc-950 px-4 sm:px-6 lg:px-8 py-4 border-t dark:border-zinc-800">
+            <form onSubmit={handleSubmit} className="max-w-4xl mx-auto space-y-3">
+              <div className="flex flex-col sm:flex-row gap-3">
+                <Input
+                  type="text"
+                  value={bookNameInput}
+                  onChange={(e) => setBookNameInput(e.target.value)}
+                  placeholder="Book Name (e.g., Sapiens)"
+                  className="flex-grow h-12 rounded-lg border-zinc-200 dark:border-zinc-800"
+                  disabled={isSearching}
+                />
+                <Input
+                  type="text"
+                  value={authorInput}
+                  onChange={(e) => setAuthorInput(e.target.value)}
+                  placeholder="Author (Optional, e.g., Yuval Noah Harari)"
+                  className="flex-grow h-12 rounded-lg border-zinc-200 dark:border-zinc-800"
+                  disabled={isSearching}
+                />
               </div>
-            )}
+              <Button
+                type="submit"
+                disabled={isSearching || !bookNameInput.trim()}
+                className="w-full h-12 bg-orange-500 hover:bg-orange-600 text-white rounded-lg disabled:opacity-50 flex items-center justify-center gap-2"
+              >
+                {isSearching ? (
+                  <>
+                    <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    Generating Summary...
+                  </>
+                ) : (
+                  <>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                    </svg>
+                    Generate Book Summary
+                  </>
+                )}
+              </Button>
+            </form>
           </div>
-        </form>
-      </div>
         </>
       )}
 
@@ -658,7 +584,7 @@ export function Chat() {
           <DialogHeader>
             <DialogTitle>Firecrawl API Key Required</DialogTitle>
             <DialogDescription>
-              To use Firesearch, you need a Firecrawl API key. You can get one for free.
+              To generate book summaries, a Firecrawl API key is recommended for web crawling. You can get one for free. If it's set in your server environment (.env), this step might be optional.
             </DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
@@ -673,7 +599,7 @@ export function Chat() {
             </div>
             <div className="space-y-2">
               <label htmlFor="apiKey" className="text-sm font-medium">
-                Enter your API key
+                Enter your Firecrawl API key (Optional if set in .env)
               </label>
               <Input
                 id="apiKey"
@@ -688,13 +614,21 @@ export function Chat() {
           <div className="flex gap-2 justify-end">
             <Button
               variant="code"
-              onClick={() => setShowApiKeyModal(false)}
+              onClick={() => {
+                setShowApiKeyModal(false);
+                // If user cancels, and there was a pending search, try it without client-side key
+                if (pendingSearch) {
+                  toast.info("Attempting search without client-side API key...");
+                  performSearch(pendingSearch.bookName, pendingSearch.author);
+                  setPendingSearch(null);
+                }
+              }}
             >
-              Cancel
+              Cancel / Use Env Key
             </Button>
             <Button 
               variant="orange"
-              onClick={saveApiKey}
+              onClick={saveApiKeyAndSearch}
               disabled={!firecrawlApiKey.trim()}
             >
               Save and Continue
