@@ -4,7 +4,14 @@ import { createStreamableValue } from 'ai/rsc';
 import { FirecrawlClient } from '@/lib/firecrawl';
 import { LangGraphSearchEngine as SearchEngine, SearchEvent } from '@/lib/langgraph-search-engine';
 
-export async function search(query: string, context?: { query: string; response: string }[], apiKey?: string) {
+interface BookSearchParams {
+  bookName: string;
+  author?: string;
+  context?: { query: string; response: string }[];
+  apiKey?: string;
+}
+
+export async function search({ bookName, author, context, apiKey }: BookSearchParams) {
   const stream = createStreamableValue<SearchEvent>();
   
   // Create FirecrawlClient with API key if provided
@@ -15,7 +22,8 @@ export async function search(query: string, context?: { query: string; response:
   (async () => {
     try {
       // Stream events as they happen
-      await searchEngine.search(query, (event) => {
+      // The searchEngine will internally use bookName and author to generate queries
+      await searchEngine.search(bookName, author, (event) => {
         stream.update(event);
       }, context);
       
